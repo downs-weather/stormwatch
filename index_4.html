@@ -1,0 +1,708 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Storm Watch · Dalby–Macalister</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<style>
+/* Layout: status bar → three temperature stations west-to-east → map with live strike panel beside it */
+:root{
+  --bg:#0a1018; --panel:#111a26; --panel2:#172334; --line:#24344a;
+  --fg:#e9f0f8; --muted:#8fa3bb; --accent:#4f8fe0;
+  --bolt:#ffe066; --warn:#ff9f1c; --danger:#ff4d4d; --ok:#3ecf8e;
+  --display:"Barlow Condensed","Arial Narrow",Arial,sans-serif;
+  --body:"Barlow",system-ui,Arial,sans-serif;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+html,body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.4 var(--body)}
+.wrap{max-width:1400px;margin:0 auto;padding-block:14px 28px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));display:grid;gap:14px}
+a{color:#9cc3ff}
+
+/* Top bar */
+.top{display:flex;flex-wrap:wrap;align-items:center;gap:10px 18px;justify-content:space-between}
+.brand{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}
+.brand h1{font:700 28px/1 var(--display);letter-spacing:.5px;margin:0;text-transform:uppercase}
+.brand h1 span{color:var(--bolt)}
+.brand small{color:var(--muted)}
+.pills{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.pill{display:inline-flex;align-items:center;gap:7px;padding:5px 11px;border-radius:999px;background:var(--panel2);border:1px solid var(--line);font-size:13px;color:var(--muted);white-space:nowrap}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--muted)}
+.dot.ok{background:var(--ok);box-shadow:0 0 0 0 rgba(62,207,142,.6);animation:ping 2s infinite}
+.dot.bad{background:var(--danger)}
+.dot.wait{background:var(--warn)}
+@keyframes ping{0%{box-shadow:0 0 0 0 rgba(62,207,142,.55)}100%{box-shadow:0 0 0 9px rgba(62,207,142,0)}}
+.clock{font:600 20px/1 var(--display);color:var(--fg);font-variant-numeric:tabular-nums}
+
+/* Alert */
+.alert{border-radius:10px;padding:12px 16px;font-weight:600;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+.alert.red{background:#4a1418;border:1px solid var(--danger);color:#ffd9d9}
+.alert.amber{background:#3d2a0e;border:1px solid var(--warn);color:#ffe3bd}
+.alert b{font:700 22px/1 var(--display);letter-spacing:.4px}
+
+/* Stations */
+.stations{display:grid;grid-template-columns:repeat(var(--cols,5),minmax(0,1fr));gap:12px}
+.st{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px;display:grid;gap:8px;min-width:0}
+.st.home{border-color:var(--accent);background:linear-gradient(180deg,#14233a,var(--panel))}
+.st-h{display:flex;flex-direction:column;gap:3px}
+.st-name{font:700 18px/1 var(--display);text-transform:uppercase;letter-spacing:1px}
+.st-sub{color:var(--muted);font-size:12px}
+.st-main{display:flex;align-items:flex-end;gap:14px;flex-wrap:wrap}
+.temp{font:600 52px/0.9 var(--display);font-variant-numeric:tabular-nums}
+.temp sup{font-size:22px;vertical-align:top;color:var(--muted)}
+.cond{color:var(--muted);font-size:14px;padding-bottom:6px}
+.cond strong{display:block;color:var(--fg);font-weight:600}
+.kv{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;font-variant-numeric:tabular-nums}
+.kv div{background:var(--panel2);border-radius:8px;padding:6px 8px;min-width:0}
+.kv span{display:block;color:var(--muted);font-size:10.5px;text-transform:uppercase;letter-spacing:.8px}
+.kv em{font-style:normal;font-weight:600;font-size:15px;white-space:nowrap}
+.spark{width:100%;height:46px;display:block}
+.spark-lbl{display:flex;justify-content:space-between;color:var(--muted);font-size:11px;margin-top:-4px}
+
+/* Map + side */
+.main{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:12px}
+.mapbox{position:relative;border-radius:12px;overflow:hidden;border:1px solid var(--line);min-height:560px;background:#0d1520}
+#map{position:absolute;inset:0}
+.mapctl{position:absolute;z-index:500;top:10px;right:10px;display:flex;flex-direction:column;gap:6px;align-items:flex-end}
+.seg{display:flex;background:rgba(10,16,24,.88);border:1px solid var(--line);border-radius:9px;overflow:hidden}
+.seg button{background:none;border:0;color:var(--muted);padding:7px 11px;font:600 13px var(--body);cursor:pointer}
+.seg button.on{background:var(--accent);color:#fff}
+.seg button:focus-visible,.btn:focus-visible{outline:2px solid var(--bolt);outline-offset:1px}
+.btn{background:rgba(10,16,24,.88);border:1px solid var(--line);color:var(--fg);padding:7px 11px;border-radius:9px;font:600 13px var(--body);cursor:pointer}
+.btn.on{border-color:var(--bolt);color:var(--bolt)}
+.legend{position:absolute;z-index:500;left:10px;bottom:22px;background:rgba(10,16,24,.88);border:1px solid var(--line);border-radius:9px;padding:8px 10px;font-size:12px;display:grid;gap:4px}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px;vertical-align:-1px}
+.homemenu{position:absolute;z-index:600;top:10px;left:50%;transform:translateX(-50%);background:var(--panel);border:1px solid var(--accent);border-radius:12px;padding:12px;display:grid;gap:8px;width:min(300px,calc(100% - 20px));box-shadow:0 10px 30px rgba(0,0,0,.5)}
+.homemenu p{margin:0;color:var(--muted);font-size:12.5px}
+.homemenu .btn{width:100%;text-align:left}
+.sethome-hint{position:absolute;z-index:600;top:10px;left:50%;transform:translateX(-50%);background:var(--accent);color:#fff;padding:8px 14px;border-radius:9px;font-weight:600;font-size:13px}
+
+.side{display:grid;gap:12px;align-content:start;min-width:0}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px;min-width:0}
+.card h2{font:700 15px/1 var(--display);text-transform:uppercase;letter-spacing:1.2px;color:var(--muted);margin:0 0 10px}
+.nearest{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.nearest .big{font:600 48px/1 var(--display);font-variant-numeric:tabular-nums}
+.nearest .big small{font-size:22px;color:var(--muted)}
+.nearest .meta{color:var(--muted)}
+.rings{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;text-align:center;font-variant-numeric:tabular-nums}
+.rings div{background:var(--panel2);border-radius:8px;padding:8px 4px}
+.rings b{display:block;font:600 26px/1 var(--display)}
+.rings span{color:var(--muted);font-size:11px}
+.rings .hot{background:#4a1418;color:#ffd9d9}
+.rings .warm{background:#3d2a0e;color:#ffe3bd}
+#rate{width:100%;height:84px;display:block}
+.list{list-style:none;margin:0;padding:0;display:grid;gap:4px;max-height:260px;overflow:auto;font-variant-numeric:tabular-nums}
+.list li{display:grid;grid-template-columns:14px 64px 1fr auto;gap:8px;align-items:center;font-size:13.5px;padding:4px 6px;border-radius:6px;background:var(--panel2)}
+.list li i{width:10px;height:10px;border-radius:50%}
+.list .ago{color:var(--muted)}
+.empty{color:var(--muted);font-size:13.5px}
+.links{display:flex;flex-wrap:wrap;gap:8px}
+.links a{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:7px 10px;text-decoration:none;font-size:13px;color:var(--fg)}
+.foot{color:var(--muted);font-size:12px;line-height:1.5}
+
+.leaflet-container{background:#0d1520;font-family:var(--body)}
+.pillbtn{cursor:pointer;color:var(--fg);font:600 13px var(--body)}
+.pillbtn:hover{border-color:var(--accent)}
+.modal-bg{position:fixed;inset:0;z-index:2000;background:rgba(3,6,10,.7);display:grid;place-items:center;padding:16px}
+.modal{background:var(--panel);border:1px solid var(--line);border-radius:14px;width:min(460px,100%);max-height:calc(100% - 32px);overflow:auto;padding:18px;display:grid;gap:14px}
+.modal h2{font:700 20px/1 var(--display);text-transform:uppercase;letter-spacing:1px;margin:0}
+.modal p{margin:0;color:var(--muted);font-size:13px}
+.trow{display:grid;grid-template-columns:1fr auto auto auto;gap:6px;align-items:center;background:var(--panel2);border-radius:8px;padding:6px 6px 6px 12px}
+.trow small{color:var(--muted);display:block;font-size:11.5px}
+.ib{background:var(--panel);border:1px solid var(--line);color:var(--fg);width:34px;height:34px;border-radius:8px;cursor:pointer;font:600 15px var(--body)}
+.ib:disabled{opacity:.3;cursor:default}
+.ib:focus-visible,.pillbtn:focus-visible{outline:2px solid var(--bolt);outline-offset:1px}
+#townSearch{width:100%;padding:10px 12px;border-radius:9px;border:1px solid var(--line);background:var(--bg);color:var(--fg);font:15px var(--body)}
+.results{display:grid;gap:4px}
+.results button{text-align:left;background:var(--panel2);border:1px solid transparent;color:var(--fg);border-radius:8px;padding:8px 12px;cursor:pointer;font:14px var(--body)}
+.results button:hover,.results button:focus-visible{border-color:var(--accent);outline:none}
+.results small{color:var(--muted)}
+.mrow{display:flex;gap:8px;justify-content:space-between;flex-wrap:wrap}
+.osm-dim{filter:invert(1) hue-rotate(180deg) brightness(.85) contrast(.9)}
+.pulse{width:44px;height:44px;margin:-22px 0 0 -22px;border-radius:50%;border:3px solid var(--bolt);animation:pulse 1.6s ease-out forwards;pointer-events:none}
+@keyframes pulse{0%{transform:scale(.15);opacity:1}100%{transform:scale(1.6);opacity:0}}
+.lbl{background:rgba(10,16,24,.85);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:2px 7px;font:600 12px var(--body);white-space:nowrap}
+.lbl.home{border-color:var(--accent);color:#cfe0ff}
+
+@media (max-width:1050px){.main{grid-template-columns:1fr}.mapbox{min-height:460px}}
+@media (max-width:1250px){.stations{grid-template-columns:repeat(2,minmax(0,1fr))}.st.home{grid-column:1/-1}.st.home .kv{grid-template-columns:repeat(4,minmax(0,1fr))}}
+@media (max-width:560px){.stations{grid-template-columns:1fr}.st.home .kv{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (prefers-reduced-motion:reduce){.dot.ok,.pulse{animation:none}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="top">
+    <div class="brand">
+      <h1>Storm Watch <span>⚡</span></h1>
+      <small id="townsLine"></small>
+    </div>
+    <div class="pills">
+      <span class="pill" id="lxPill"><span class="dot wait" id="lxDot"></span><span id="lxTxt">Lightning: connecting…</span></span>
+      <span class="pill"><span class="dot" id="wxDot"></span><span id="wxTxt">Temps: loading…</span></span>
+      <button class="pill pillbtn" id="townsBtn">Change towns</button>
+      <span class="clock" id="clock">--:--:--</span>
+    </div>
+  </div>
+
+  <div id="alert" hidden></div>
+
+  <section class="stations" id="stations"></section>
+
+  <section class="main">
+    <div class="mapbox">
+      <div id="map"></div>
+      <div class="mapctl">
+        <div class="seg" role="group" aria-label="Strike window">
+          <button id="w1" data-w="1">1 min</button>
+          <button id="w5" data-w="5">5 min</button>
+          <button id="w10" data-w="10" class="on">10 min</button>
+        </div>
+        <button class="btn" id="radarBtn">Rain radar</button>
+        <button class="btn" id="animBtn" hidden>▶ Radar loop (1 hr)</button>
+        <button class="btn" id="replayBtn">▶ Lightning replay 10 min</button>
+        <button class="btn" id="homeBtn">Set home</button>
+      </div>
+      <div class="legend" aria-label="Strike age legend">
+        <div><i style="background:#ffffff"></i>&lt; 1 min</div>
+        <div><i style="background:#ffe066"></i>1–2 min</div>
+        <div><i style="background:#ff9f1c"></i>2–4 min</div>
+        <div><i style="background:#ff4d4d"></i>4–7 min</div>
+        <div><i style="background:#b0307a"></i>7–10 min</div>
+      </div>
+      <div class="sethome-hint" id="homeHint" hidden>Tap the map where you live</div>
+      <div class="homemenu" id="homeMenu" hidden>
+        <button class="btn" id="hmLoc">📍 Use my current location</button>
+        <button class="btn" id="hmTap">Tap a spot on the map</button>
+        <button class="btn" id="hmClear" hidden>Remove my home</button>
+        <button class="btn" id="hmCancel">Cancel</button>
+        <p>Your home is saved only in this browser on this device. It is never sent anywhere or shown to anyone else.</p>
+      </div>
+    </div>
+
+    <aside class="side">
+      <div class="card">
+        <h2>Nearest strike to <span class="refName">home</span></h2>
+        <div class="nearest" id="nearest"><span class="empty">No strikes in the last 10 minutes.</span></div>
+      </div>
+      <div class="card">
+        <h2>Strikes near <span class="refName">home</span> · last 10 min</h2>
+        <div class="rings" id="rings"></div>
+      </div>
+      <div class="card">
+        <h2>Strikes per minute · within 100 km</h2>
+        <svg id="rate" viewBox="0 0 300 84" preserveAspectRatio="none"></svg>
+      </div>
+      <div class="card">
+        <h2>Latest strikes · within 150 km</h2>
+        <ul class="list" id="list"></ul>
+      </div>
+      <div class="card">
+        <h2>Warnings &amp; more</h2>
+        <div class="links">
+          <a href="https://www.bom.gov.au/qld/warnings/" target="_blank" rel="noopener">BOM QLD warnings ↗</a>
+          <a href="https://www.weatherzone.com.au/qld/darling-downs/dalby" target="_blank" rel="noopener">Weatherzone Dalby ↗</a>
+          <a href="https://map.blitzortung.org/#8/-27.18/151.26" target="_blank" rel="noopener">Blitzortung map ↗</a>
+          <a href="https://higginsstormchasing.com/" target="_blank" rel="noopener">Higgins Storm Chasing ↗</a>
+        </div>
+      </div>
+    </aside>
+  </section>
+
+  <p class="foot">
+    Lightning: <a href="https://www.blitzortung.org" target="_blank" rel="noopener">Blitzortung.org</a> community network, for private, non-commercial use. Strike positions are approximate and some strikes are missed, so treat this as a guide. History builds from the moment this page opens; keep it open to hold the full 10 minutes.
+    Temperatures: <a href="https://open-meteo.com" target="_blank" rel="noopener">Open-Meteo</a> current conditions (model-based, refreshed every 5 min). Radar: RainViewer. Map tiles © Esri and OpenStreetMap contributors.
+    For official warnings always check the BOM.
+  </p>
+</div>
+
+<div class="modal-bg" id="townModal" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="tmTitle">
+    <h2 id="tmTitle">Your towns</h2>
+    <p>Pick up to 8 towns. Changes are saved only on this device. Until you set a home, distances are measured from the first town.</p>
+    <div id="townRows" style="display:grid;gap:6px"></div>
+    <label for="townSearch" style="font-weight:600;font-size:14px">Add a town</label>
+    <input id="townSearch" type="search" placeholder="Type a town name, e.g. Chinchilla" autocomplete="off">
+    <div class="results" id="townResults"></div>
+    <div class="mrow"><button class="btn" id="townReset">Reset to default towns</button><button class="btn on" id="townDone">Done</button></div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+(function(){
+"use strict";
+
+/* ---------- Places ---------- */
+const DEFAULT_TOWNS = [
+  {name:"Dalby", sub:"Western Downs", lat:-27.1813, lon:151.2647},
+  {name:"Macalister", sub:"Warrego Hwy", lat:-27.0383, lon:151.0743},
+  {name:"Bell", sub:"Bunya Hwy", lat:-26.9333, lon:151.4500},
+  {name:"Jandowae", sub:"Dalby–Jandowae Rd", lat:-26.7817, lon:151.1117}
+];
+const MAX_TOWNS = 8;
+function loadTowns(){ try{ const t=JSON.parse(localStorage.getItem("sw_towns")); if(Array.isArray(t)&&t.length&&t.every(x=>x&&typeof x.name==="string"&&isFinite(x.lat)&&isFinite(x.lon))) return t.slice(0,MAX_TOWNS);}catch(e){} return null; }
+function saveTowns(){ try{ localStorage.setItem("sw_towns",JSON.stringify(TOWNS)); }catch(e){} }
+let TOWNS = loadTowns() || DEFAULT_TOWNS.map(t=>({...t}));
+const mainTown = () => TOWNS[0];
+const townCentre = () => ({lat:TOWNS.reduce((a,t)=>a+t.lat,0)/TOWNS.length, lon:TOWNS.reduce((a,t)=>a+t.lon,0)/TOWNS.length});
+let homeSet = !!loadHome();
+let HOME = loadHome() || {lat:mainTown().lat, lon:mainTown().lon};   // distances are measured from the first town until a home is set
+const refName = () => homeSet ? "home" : mainTown().name;
+function syncRefNames(){ document.querySelectorAll(".refName").forEach(e=>e.textContent=refName()); }
+
+function loadHome(){ try{const h=JSON.parse(localStorage.getItem("sw_home")); if(h&&isFinite(h.lat)&&isFinite(h.lon)) return h;}catch(e){} return null; }
+function saveHome(h){ try{ if(h) localStorage.setItem("sw_home",JSON.stringify(h)); else localStorage.removeItem("sw_home"); }catch(e){} }
+
+const WINDOW_MAX = 10*60*1000;        // keep 10 minutes
+const KEEP_RADIUS_KM = 600;           // ignore strikes further than this from home
+let viewMin = 10;
+
+/* ---------- Helpers ---------- */
+const $ = id => document.getElementById(id);
+const R = 6371;
+function distKm(a,b){const t=Math.PI/180,dLa=(b.lat-a.lat)*t,dLo=(b.lon-a.lon)*t;const x=Math.sin(dLa/2)**2+Math.cos(a.lat*t)*Math.cos(b.lat*t)*Math.sin(dLo/2)**2;return 2*R*Math.asin(Math.sqrt(x));}
+function bearing(a,b){const t=Math.PI/180;const y=Math.sin((b.lon-a.lon)*t)*Math.cos(b.lat*t);const x=Math.cos(a.lat*t)*Math.sin(b.lat*t)-Math.sin(a.lat*t)*Math.cos(b.lat*t)*Math.cos((b.lon-a.lon)*t);return (Math.atan2(y,x)/t+360)%360;}
+const PTS=["N","NNE","NE","ENE","E","ESE","SE","SSE","S","SSW","SW","WSW","W","WNW","NW","NNW"];
+const compass = d => PTS[Math.round(d/22.5)%16];
+function ago(ms){const s=Math.max(0,Math.round(ms/1000)); if(s<60) return s+"s ago"; const m=Math.floor(s/60); return m+"m "+String(s%60).padStart(2,"0")+"s ago";}
+function ageColor(ms){const m=ms/60000; if(m<1) return "#ffffff"; if(m<2) return "#ffe066"; if(m<4) return "#ff9f1c"; if(m<7) return "#ff4d4d"; return "#b0307a";}
+const fmtTime = d => d.toLocaleTimeString("en-AU",{hour:"2-digit",minute:"2-digit",second:"2-digit",hour12:false,timeZone:"Australia/Brisbane"});
+
+/* ---------- Clock ---------- */
+setInterval(()=>{$("clock").textContent=fmtTime(new Date());},1000);
+$("clock").textContent=fmtTime(new Date());
+
+/* ---------- Map ---------- */
+let townLayer=null, map=null, strikeLayer=null, homeMarker=null, ringLayer=null, radarLayer=null;
+const hasLeaflet = typeof L!=="undefined";
+if(hasLeaflet){
+  map = L.map("map",{zoomControl:true,preferCanvas:true}).setView(homeSet?[HOME.lat,HOME.lon]:[townCentre().lat,townCentre().lon],9);
+  const ESRI="https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/";
+  const base=L.tileLayer(ESRI+"World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}",{maxZoom:16,attribution:"Tiles © Esri, HERE, Garmin, © OpenStreetMap contributors"}).addTo(map);
+  map.createPane("labels"); map.getPane("labels").style.zIndex=350; map.getPane("labels").style.pointerEvents="none";
+  L.tileLayer(ESRI+"World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}",{maxZoom:16,pane:"labels",opacity:.9}).addTo(map);
+  /* Fallback to standard OpenStreetMap if the Esri tiles fail */
+  let baseErr=0;
+  base.on("tileerror",()=>{ if(++baseErr===6){ map.removeLayer(base); L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:18,attribution:"© OpenStreetMap contributors",className:"osm-dim"}).addTo(map).bringToBack(); } });
+  strikeLayer = L.layerGroup().addTo(map);
+  ringLayer = L.layerGroup().addTo(map);
+  townLayer = L.layerGroup().addTo(map);
+  drawTowns();
+  drawHome();
+} else {
+  $("map").innerHTML='<div style="padding:24px;color:#8fa3bb">The map library could not load. Check your internet connection and reload the page.</div>';
+}
+
+function drawTowns(){
+  $("townsLine").textContent=TOWNS.map(t=>t.name).join(" · ");
+  if(!map) return;
+  townLayer.clearLayers();
+  TOWNS.forEach(p=>{
+    L.circleMarker([p.lat,p.lon],{radius:5,color:"#9cc3ff",weight:2,fillColor:"#0a1018",fillOpacity:1}).addTo(townLayer)
+      .bindTooltip(p.name,{permanent:true,direction:"right",offset:[8,0],className:"lbl"});
+  });
+}
+function drawHome(){
+  if(!map) return;
+  if(homeMarker) map.removeLayer(homeMarker);
+  ringLayer.clearLayers();
+  homeMarker = null;
+  if(homeSet) homeMarker = L.circleMarker([HOME.lat,HOME.lon],{radius:7,color:"#4f8fe0",weight:3,fillColor:"#cfe0ff",fillOpacity:1}).addTo(map)
+    .bindTooltip("Home",{permanent:true,direction:"left",offset:[-10,0],className:"lbl home"});
+  [10,25,50].forEach(km=>{
+    L.circle([HOME.lat,HOME.lon],{radius:km*1000,color:"#4f8fe0",weight:1,opacity:.55,fill:false,dashArray:"4 6",interactive:false}).addTo(ringLayer);
+    const lbl=L.latLng(HOME.lat-km/111.2,HOME.lon);
+    L.marker(lbl,{interactive:false,icon:L.divIcon({className:"",html:'<span style="color:#7fa6dd;font:600 11px Barlow,Arial">'+km+' km</span>',iconSize:[40,14],iconAnchor:[20,7]})}).addTo(ringLayer);
+  });
+}
+
+/* Set home: saved only in this browser (localStorage) */
+let settingHome=false;
+const menu=$("homeMenu");
+function closeHomeUI(){ settingHome=false; menu.hidden=true; $("homeHint").hidden=true; $("homeBtn").classList.remove("on"); }
+function homeChanged(){
+  syncRefNames(); $("homeBtn").textContent=homeSet?"Home ✓":"Set home";
+  drawHome(); loadWeather(); renderPanel(); redrawStrikes();
+}
+function setHome(lat,lon){
+  HOME={lat:+lat.toFixed(4),lon:+lon.toFixed(4)}; homeSet=true; saveHome(HOME);
+  closeHomeUI(); homeChanged(); if(map) map.setView([HOME.lat,HOME.lon],9);
+}
+$("homeBtn").addEventListener("click",()=>{
+  if(!menu.hidden||settingHome){ closeHomeUI(); return; }
+  $("hmClear").hidden=!homeSet; menu.hidden=false; $("homeBtn").classList.add("on");
+});
+$("hmCancel").addEventListener("click",closeHomeUI);
+$("hmTap").addEventListener("click",()=>{ menu.hidden=true; settingHome=true; $("homeHint").hidden=false; });
+$("hmClear").addEventListener("click",()=>{
+  homeSet=false; HOME={lat:mainTown().lat,lon:mainTown().lon}; saveHome(null); closeHomeUI(); homeChanged();
+});
+$("hmLoc").addEventListener("click",()=>{
+  if(!navigator.geolocation){ $("hmLoc").textContent="Location not available here"; return; }
+  $("hmLoc").textContent="Finding you…";
+  navigator.geolocation.getCurrentPosition(
+    pos=>{ $("hmLoc").textContent="📍 Use my current location"; setHome(pos.coords.latitude,pos.coords.longitude); },
+    ()=>{ $("hmLoc").textContent="Location blocked. Tap the map instead"; },
+    {enableHighAccuracy:false,timeout:15000,maximumAge:600000});
+});
+if(map) map.on("click",e=>{ if(settingHome) setHome(e.latlng.lat,e.latlng.lng); });
+document.addEventListener("click",e=>{ if(e.target.closest&&e.target.closest("[data-sethome]")) $("homeBtn").click(); });
+
+/* Town editor */
+function townsChanged(){
+  saveTowns(); drawTowns();
+  if(!homeSet){ HOME={lat:mainTown().lat,lon:mainTown().lon}; drawHome(); }
+  syncRefNames(); loadWeather(); renderPanel(); redrawStrikes(); renderTownRows();
+}
+function renderTownRows(){
+  const box=$("townRows"); box.innerHTML="";
+  TOWNS.forEach((t,i)=>{
+    const row=document.createElement("div"); row.className="trow";
+    const lab=document.createElement("div"); lab.textContent=t.name;
+    const sm=document.createElement("small"); sm.textContent=(i===0?"First town · ":"")+(t.sub||""); lab.appendChild(sm);
+    const mk=(txt,title,dis,fn)=>{ const b=document.createElement("button"); b.className="ib"; b.textContent=txt; b.title=title; b.setAttribute("aria-label",title+" "+t.name); b.disabled=dis; b.onclick=fn; return b; };
+    row.append(lab,
+      mk("↑","Move up",i===0,()=>{ [TOWNS[i-1],TOWNS[i]]=[TOWNS[i],TOWNS[i-1]]; townsChanged(); }),
+      mk("↓","Move down",i===TOWNS.length-1,()=>{ [TOWNS[i+1],TOWNS[i]]=[TOWNS[i],TOWNS[i+1]]; townsChanged(); }),
+      mk("✕","Remove",TOWNS.length<=1,()=>{ TOWNS.splice(i,1); townsChanged(); }));
+    box.appendChild(row);
+  });
+  $("townSearch").disabled=TOWNS.length>=MAX_TOWNS;
+  $("townSearch").placeholder=TOWNS.length>=MAX_TOWNS?"8 towns is the limit. Remove one to add another":"Type a town name, e.g. Chinchilla";
+}
+$("townsBtn").addEventListener("click",()=>{ renderTownRows(); $("townResults").innerHTML=""; $("townSearch").value=""; $("townModal").hidden=false; setTimeout(()=>$("townSearch").focus(),50); });
+$("townDone").addEventListener("click",()=>{ $("townModal").hidden=true; });
+$("townModal").addEventListener("click",e=>{ if(e.target.id==="townModal") $("townModal").hidden=true; });
+document.addEventListener("keydown",e=>{ if(e.key==="Escape") $("townModal").hidden=true; });
+$("townReset").addEventListener("click",()=>{ TOWNS=DEFAULT_TOWNS.map(t=>({...t})); townsChanged(); });
+let searchTimer=null, searchSeq=0;
+$("townSearch").addEventListener("input",()=>{
+  clearTimeout(searchTimer);
+  const q=$("townSearch").value.trim();
+  if(q.length<2){ $("townResults").innerHTML=""; return; }
+  searchTimer=setTimeout(()=>searchTowns(q),350);
+});
+async function searchTowns(q){
+  const seq=++searchSeq, box=$("townResults");
+  box.innerHTML='<p>Searching…</p>';
+  try{
+    const r=await fetch("https://geocoding-api.open-meteo.com/v1/search?count=8&language=en&format=json&countryCode=AU&name="+encodeURIComponent(q));
+    const j=await r.json(); if(seq!==searchSeq) return;
+    const res=(j.results||[]);
+    box.innerHTML="";
+    if(!res.length){ box.innerHTML='<p>No Australian towns found with that name.</p>'; return; }
+    res.forEach(x=>{
+      const b=document.createElement("button");
+      const region=[x.admin2,x.admin1].filter(Boolean).join(", ");
+      b.textContent=x.name+" "; const sm=document.createElement("small"); sm.textContent=region; b.appendChild(sm);
+      b.onclick=()=>{
+        if(TOWNS.length>=MAX_TOWNS) return;
+        TOWNS.push({name:x.name,sub:x.admin2||x.admin1||"",lat:+x.latitude.toFixed(4),lon:+x.longitude.toFixed(4)});
+        $("townSearch").value=""; box.innerHTML=""; townsChanged(); $("townSearch").focus();
+      };
+      box.appendChild(b);
+    });
+  }catch(e){ if(seq===searchSeq) box.innerHTML='<p>Search didn\'t work. Check your internet connection and try again.</p>'; }
+}
+
+/* Window selector */
+document.querySelectorAll(".seg button").forEach(b=>b.addEventListener("click",()=>{
+  viewMin=+b.dataset.w;
+  document.querySelectorAll(".seg button").forEach(x=>x.classList.toggle("on",x===b));
+  redrawStrikes();
+}));
+
+/* Radar (RainViewer): newest frame shown live, checked every 30 s, optional 1-hour loop */
+let radarOn=false, radarFrames=[], radarLayers={}, radarHost="", radarScheme=4, radarErr=0, shownTs=0;
+let animOn=false, animTimer=null, animIdx=0;
+if(map){ map.createPane("radar"); map.getPane("radar").style.zIndex=300; map.getPane("radar").style.pointerEvents="none"; }
+
+$("radarBtn").addEventListener("click",async()=>{
+  if(!map) return;
+  radarOn=!radarOn; $("radarBtn").classList.toggle("on",radarOn);
+  $("animBtn").hidden=!radarOn;
+  if(!radarOn){ stopAnim(); Object.values(radarLayers).forEach(l=>map.removeLayer(l)); radarLayers={}; shownTs=0; $("radarBtn").textContent="Rain radar"; return; }
+  $("radarBtn").textContent="Radar: loading…";
+  await loadRadar();
+});
+$("animBtn").addEventListener("click",()=>{ animOn?stopAnim():startAnim(); });
+
+function frameLayer(f){
+  if(!radarLayers[f.time]){
+    const l=L.tileLayer(radarHost+f.path+"/256/{z}/{x}/{y}/"+radarScheme+"/1_1.png",{pane:"radar",opacity:0,maxNativeZoom:7,maxZoom:18,attribution:"Radar © RainViewer"});
+    l.on("tileerror",()=>{ if(++radarErr===8 && radarScheme!==2){ radarScheme=2; rebuildRadar(); } });
+    radarLayers[f.time]=l.addTo(map);
+  }
+  return radarLayers[f.time];
+}
+function rebuildRadar(){ Object.values(radarLayers).forEach(l=>map.removeLayer(l)); radarLayers={}; const ts=shownTs; shownTs=0; showFrame(radarFrames.find(f=>f.time===ts)||radarFrames[radarFrames.length-1]); }
+function showFrame(f){
+  if(!f) return;
+  frameLayer(f);
+  Object.entries(radarLayers).forEach(([t,x])=>x.setOpacity(+t===f.time?0.65:0));
+  shownTs=f.time; labelRadar();
+}
+function labelRadar(){
+  if(!radarOn||!shownTs) return;
+  const mins=Math.round((Date.now()/1000-shownTs)/60);
+  const latest=radarFrames.length&&shownTs===radarFrames[radarFrames.length-1].time;
+  $("radarBtn").textContent="Radar "+fmtTime(new Date(shownTs*1000)).slice(0,5)+(latest?" · "+mins+" min old":" · loop");
+}
+async function loadRadar(){
+  try{
+    const r=await fetch("https://api.rainviewer.com/public/weather-maps.json",{cache:"no-store"});
+    const j=await r.json();
+    const past=(j.radar&&j.radar.past)||[]; if(!past.length) throw 0;
+    radarHost=j.host; radarFrames=past.slice(-7);   // about the last hour
+    // drop layers for frames that have aged out
+    Object.keys(radarLayers).forEach(t=>{ if(!radarFrames.some(f=>f.time===+t)){ map.removeLayer(radarLayers[t]); delete radarLayers[t]; } });
+    if(!animOn) showFrame(radarFrames[radarFrames.length-1]);
+  }catch(e){
+    if(!Object.keys(radarLayers).length){
+      radarOn=false; $("radarBtn").classList.remove("on"); $("animBtn").hidden=true; $("radarBtn").textContent="Radar unavailable";
+      setTimeout(()=>{ if(!radarOn) $("radarBtn").textContent="Rain radar"; },4000);
+    }
+  }
+}
+function startAnim(){
+  if(!radarFrames.length) return;
+  animOn=true; $("animBtn").classList.add("on"); $("animBtn").textContent="■ Stop loop";
+  radarFrames.forEach(frameLayer);   // preload every frame
+  animIdx=0;
+  const tick=()=>{
+    showFrame(radarFrames[animIdx]);
+    const last=animIdx===radarFrames.length-1;
+    animIdx=(animIdx+1)%radarFrames.length;
+    animTimer=setTimeout(tick,last?2000:700);
+  };
+  tick();
+}
+function stopAnim(){
+  animOn=false; clearTimeout(animTimer); $("animBtn").classList.remove("on"); $("animBtn").textContent="▶ Radar loop (1 hr)";
+  if(radarOn&&radarFrames.length) showFrame(radarFrames[radarFrames.length-1]);
+}
+setInterval(()=>{ if(radarOn) loadRadar(); },30*1000);
+setInterval(labelRadar,30000);
+
+/* ---------- Lightning (Blitzortung live feed) ---------- */
+const strikes=[]; // {t, lat, lon, d, b, mk}
+const SERVERS=["ws1","ws7","ws8","ws2","ws3","ws4","ws5","ws6"];
+let srv=Math.floor(Math.random()*3), ws=null, lastMsg=0, fails=0;
+
+function lzwDecode(s){
+  const dict={}, data=s.split(""); let cur=data[0], old=cur, out=[cur], code=256;
+  for(let i=1;i<data.length;i++){
+    const c=data[i].charCodeAt(0);
+    const phrase = c<256 ? data[i] : (dict[c] ? dict[c] : old+cur);
+    out.push(phrase); cur=phrase.charAt(0); dict[code++]=old+cur; old=phrase;
+  }
+  return out.join("");
+}
+function setLx(state,txt){ $("lxDot").className="dot "+state; $("lxTxt").textContent=txt; }
+
+function connect(){
+  const host=SERVERS[srv%SERVERS.length];
+  setLx("wait","Lightning: connecting…");
+  try{ ws=new WebSocket("wss://"+host+".blitzortung.org/"); }catch(e){ return retry(); }
+  ws.onopen=()=>{ fails=0; ws.send('{"a":111}'); setLx("ok","Lightning: live"); lastMsg=Date.now(); };
+  ws.onmessage=ev=>{
+    lastMsg=Date.now();
+    let o; try{ o=JSON.parse(lzwDecode(ev.data)); }catch(e){ try{o=JSON.parse(ev.data);}catch(_){return;} }
+    if(!o||!isFinite(o.lat)||!isFinite(o.lon)) return;
+    addStrike({lat:o.lat,lon:o.lon,t:o.time?Math.round(o.time/1e6):Date.now()},true);
+  };
+  ws.onerror=()=>{};
+  ws.onclose=()=>retry();
+}
+function retry(){
+  if(ws){ ws.onclose=null; try{ws.close();}catch(e){} ws=null; }
+  fails++; srv++;
+  setLx(fails>6?"bad":"wait", fails>6?"Lightning: can't connect, retrying":"Lightning: reconnecting…");
+  setTimeout(connect, Math.min(30000,2000*fails));
+}
+/* Watchdog: if the stream goes silent for 90 s, reconnect */
+setInterval(()=>{ if(ws&&ws.readyState===1&&Date.now()-lastMsg>90000){ retry(); } },15000);
+
+function addStrike(s,live){
+  const d=distKm(HOME,s); if(d>KEEP_RADIUS_KM) return;
+  s.d=d; s.b=bearing(HOME,s);
+  strikes.push(s);
+  if(map){
+    s.mk=L.circleMarker([s.lat,s.lon],{radius:5,weight:1,color:"#000",fillColor:ageColor(Date.now()-s.t),fillOpacity:.95});
+    s.mk.bindTooltip(()=>Math.round(distKm(HOME,s))+" km "+compass(bearing(HOME,s))+" of "+refName()+" · "+ago(Date.now()-s.t));
+    if(Date.now()-s.t<=viewMin*60000) s.mk.addTo(strikeLayer);
+    if(live && d<200){
+      const p=L.marker([s.lat,s.lon],{interactive:false,icon:L.divIcon({className:"",html:'<div class="pulse"></div>',iconSize:[0,0]})}).addTo(map);
+      setTimeout(()=>map.removeLayer(p),1700);
+    }
+  }
+  schedulePanel();
+}
+
+function prune(){
+  const cut=Date.now()-WINDOW_MAX;
+  while(strikes.length && strikes[0].t<cut){ const s=strikes.shift(); if(s.mk&&strikeLayer) strikeLayer.removeLayer(s.mk); }
+}
+function redrawStrikes(){
+  if(!map) return;
+  const now=Date.now(), lim=viewMin*60000;
+  strikes.forEach(s=>{
+    s.d=distKm(HOME,s); s.b=bearing(HOME,s);
+    const a=now-s.t;
+    if(a<=lim){ s.mk.setStyle({fillColor:ageColor(a)}); if(!strikeLayer.hasLayer(s.mk)) s.mk.addTo(strikeLayer); }
+    else if(strikeLayer.hasLayer(s.mk)) strikeLayer.removeLayer(s.mk);
+  });
+}
+setInterval(()=>{ prune(); if(!replaying) redrawStrikes(); renderPanel(); },3000);
+
+/* Replay: animate the last 10 minutes in ~15 seconds */
+let replaying=false;
+$("replayBtn").addEventListener("click",()=>{
+  if(!map||replaying||!strikes.length) return;
+  replaying=true; $("replayBtn").classList.add("on");
+  strikeLayer.clearLayers();
+  const end=Date.now(), start=end-WINDOW_MAX, dur=15000, t0=performance.now();
+  const step=()=>{
+    const f=Math.min(1,(performance.now()-t0)/dur), simNow=start+f*WINDOW_MAX;
+    $("replayBtn").textContent="Replaying "+fmtTime(new Date(simNow)).slice(0,5);
+    strikes.forEach(s=>{
+      if(s.t<=simNow){ const a=simNow-s.t; s.mk.setStyle({fillColor:ageColor(a)}); if(!strikeLayer.hasLayer(s.mk)) s.mk.addTo(strikeLayer); }
+    });
+    if(f<1) requestAnimationFrame(step);
+    else { replaying=false; $("replayBtn").classList.remove("on"); $("replayBtn").textContent="▶ Lightning replay 10 min"; redrawStrikes(); }
+  };
+  requestAnimationFrame(step);
+});
+
+/* ---------- Side panel ---------- */
+let panelQueued=false;
+function schedulePanel(){ if(panelQueued) return; panelQueued=true; setTimeout(()=>{panelQueued=false;renderPanel();},500); }
+
+function renderPanel(){
+  const now=Date.now();
+  const recent=strikes.filter(s=>now-s.t<=WINDOW_MAX);
+  recent.forEach(s=>{s.d=distKm(HOME,s);s.b=bearing(HOME,s);});
+
+  // Nearest
+  const near=recent.reduce((m,s)=>(!m||s.d<m.d)?s:m,null);
+  $("nearest").innerHTML = near
+    ? '<span class="big">'+near.d.toFixed(near.d<10?1:0)+'<small> km</small></span><span class="meta"><b style="color:var(--fg)">'+compass(near.b)+'</b> of '+refName()+' · '+ago(now-near.t)+'</span>'
+    : '<span class="empty">No strikes within '+KEEP_RADIUS_KM+' km in the last 10 minutes.</span>';
+
+  // Rings
+  const bands=[[10,"hot"],[25,"hot"],[50,"warm"],[100,""]];
+  $("rings").innerHTML=bands.map(([km,cls])=>{
+    const n=recent.filter(s=>s.d<=km).length;
+    return '<div class="'+(n?cls:"")+'"><b>'+n+'</b><span>≤ '+km+' km</span></div>';
+  }).join("");
+
+  // Alert
+  const close5=recent.filter(s=>s.d<=15&&now-s.t<=5*60000);
+  const mid10=recent.filter(s=>s.d<=40);
+  const al=$("alert");
+  if(close5.length){
+    const c=close5.reduce((m,s)=>s.d<m.d?s:m);
+    al.className="alert red"; al.hidden=false;
+    al.innerHTML='<b>⚡ Lightning within 15 km'+(homeSet?'':' of '+mainTown().name)+'</b><span>Closest '+c.d.toFixed(1)+' km '+compass(c.b)+' of '+refName()+', '+ago(now-c.t)+'. If you can hear thunder you are in range, so get indoors.</span>';
+  } else if(mid10.length){
+    al.className="alert amber"; al.hidden=false;
+    al.innerHTML='<b>Storm activity within 40 km'+(homeSet?'':' of '+mainTown().name)+'</b><span>'+mid10.length+' strike'+(mid10.length>1?"s":"")+' in the last 10 minutes. Keep an eye on it.</span>';
+  } else al.hidden=true;
+
+  // Rate chart: 10 one-minute bins, within 100 km
+  const bins=new Array(10).fill(0);
+  recent.forEach(s=>{ if(s.d<=100){ const i=9-Math.floor((now-s.t)/60000); if(i>=0&&i<10) bins[i]++; }});
+  const mx=Math.max(4,...bins), W=300, H=84, bw=W/10;
+  let svg='<line x1="0" y1="'+(H-14)+'" x2="'+W+'" y2="'+(H-14)+'" stroke="#24344a"/>';
+  bins.forEach((n,i)=>{
+    const h=(n/mx)*(H-28), x=i*bw+3, y=H-14-h;
+    svg+='<rect x="'+x+'" y="'+y+'" width="'+(bw-6)+'" height="'+Math.max(h,n?2:0)+'" rx="2" fill="'+(i===9?"#ffe066":"#4f8fe0")+'"/>';
+    if(n) svg+='<text x="'+(x+(bw-6)/2)+'" y="'+(y-3)+'" fill="#e9f0f8" font-size="10" text-anchor="middle" font-family="Barlow,Arial">'+n+'</text>';
+  });
+  svg+='<text x="2" y="'+(H-2)+'" fill="#8fa3bb" font-size="10" font-family="Barlow,Arial">10 min ago</text><text x="'+(W-2)+'" y="'+(H-2)+'" fill="#8fa3bb" font-size="10" text-anchor="end" font-family="Barlow,Arial">now</text>';
+  $("rate").innerHTML=svg;
+
+  // List
+  const lst=recent.filter(s=>s.d<=150).sort((a,b)=>b.t-a.t).slice(0,25);
+  $("list").innerHTML = lst.length
+    ? lst.map(s=>'<li><i style="background:'+ageColor(now-s.t)+'"></i><span>'+fmtTime(new Date(s.t))+'</span><span>'+s.d.toFixed(s.d<10?1:0)+' km '+compass(s.b)+'</span><span class="ago">'+ago(now-s.t)+'</span></li>').join("")
+    : '<li style="display:block" class="empty">Nothing within 150 km yet. New strikes appear here within seconds.</li>';
+}
+
+/* ---------- Temperatures (Open-Meteo) ---------- */
+const WMO={0:"Clear",1:"Mostly clear",2:"Partly cloudy",3:"Overcast",45:"Fog",48:"Rime fog",51:"Light drizzle",53:"Drizzle",55:"Heavy drizzle",56:"Freezing drizzle",57:"Freezing drizzle",61:"Light rain",63:"Rain",65:"Heavy rain",66:"Freezing rain",67:"Freezing rain",71:"Light snow",73:"Snow",75:"Heavy snow",77:"Snow grains",80:"Light showers",81:"Showers",82:"Heavy showers",85:"Snow showers",86:"Snow showers",95:"Thunderstorm",96:"Storm with hail",99:"Storm with heavy hail"};
+
+function stationList(){
+  const sub=(t,road)=> homeSet ? Math.round(distKm(HOME,t))+" km "+compass(bearing(HOME,t))+" of home" : road;
+  return [
+    homeSet ? {key:"home",name:"Home",sub:"Your saved spot",lat:HOME.lat,lon:HOME.lon,home:true}
+            : {key:"home",name:"Your home",sub:"Not set",home:true,placeholder:true},
+    ...TOWNS.map((t,i)=>({key:"t"+i,name:t.name,sub:sub(t,t.sub||""),lat:t.lat,lon:t.lon}))
+  ];
+}
+function renderStationShell(){
+  const n=TOWNS.length+1;
+  $("stations").style.setProperty("--cols", n<=5 ? n : Math.ceil(n/2));
+  $("stations").innerHTML=stationList().map(s=>
+    '<article class="st'+(s.home?" home":"")+'" id="st-'+s.key+'"><div class="st-h"><span class="st-name">'+s.name+'</span><span class="st-sub">'+s.sub+'</span></div>'+
+    (s.placeholder?'<p class="st-sub" style="margin:0;font-size:14px">Set your home to see the temperature there and measure lightning distance from it. It stays on this device only.</p><button class="btn" data-sethome style="justify-self:start;align-self:start">Set home</button>':'<div class="st-main"><span class="temp">--<sup>°C</sup></span></div>')+'</article>'
+  ).join("");
+}
+renderStationShell();
+
+function sparkSVG(times,temps,nowIdx){
+  const W=300,H=46,n=temps.length; if(!n) return "";
+  const mn=Math.min(...temps)-1, mx=Math.max(...temps)+1;
+  const X=i=>i/(n-1)*W, Y=v=>H-4-(v-mn)/(mx-mn)*(H-10);
+  let d=""; temps.forEach((v,i)=>{d+=(i?"L":"M")+X(i).toFixed(1)+","+Y(v).toFixed(1);});
+  const area=d+"L"+W+","+H+"L0,"+H+"Z";
+  const ni=Math.max(0,Math.min(n-1,nowIdx));
+  return '<svg class="spark" viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none"><path d="'+area+'" fill="rgba(79,143,224,.18)"/><path d="'+d+'" fill="none" stroke="#4f8fe0" stroke-width="2" vector-effect="non-scaling-stroke"/><line x1="'+X(ni)+'" y1="'+Y(temps[ni])+'" x2="'+X(ni)+'" y2="'+Y(temps[ni])+'" stroke="#ffe066" stroke-width="7" stroke-linecap="round" vector-effect="non-scaling-stroke"/></svg>';
+}
+
+async function loadWeather(){
+  const st=stationList().filter(x=>!x.placeholder);
+  renderStationShell();
+  const q="latitude="+st.map(s=>s.lat.toFixed(4)).join(",")+"&longitude="+st.map(s=>s.lon.toFixed(4)).join(",")+
+    "&current=temperature_2m,apparent_temperature,relative_humidity_2m,precipitation,weather_code,wind_speed_10m,wind_direction_10m,wind_gusts_10m"+
+    "&hourly=temperature_2m&daily=temperature_2m_max,temperature_2m_min,precipitation_sum&timezone=Australia%2FBrisbane&forecast_days=1&wind_speed_unit=kmh";
+  try{
+    const r=await fetch("https://api.open-meteo.com/v1/forecast?"+q,{cache:"no-store"});
+    if(!r.ok) throw new Error(r.status);
+    let j=await r.json(); if(!Array.isArray(j)) j=[j];
+    const hourNow=new Date(new Date().toLocaleString("en-US",{timeZone:"Australia/Brisbane"})).getHours();
+    j.forEach((w,i)=>{
+      const s=st[i], c=w.current, el=$("st-"+s.key); if(!el||!c) return;
+      el.innerHTML=
+        '<div class="st-h"><span class="st-name">'+s.name+'</span><span class="st-sub">'+s.sub+'</span></div>'+
+        '<div class="st-main"><span class="temp">'+c.temperature_2m.toFixed(1)+'<sup>°C</sup></span>'+
+        '<span class="cond"><strong>'+(WMO[c.weather_code]||"—")+'</strong>Feels '+c.apparent_temperature.toFixed(0)+'° · Today '+w.daily.temperature_2m_min[0].toFixed(0)+'° / '+w.daily.temperature_2m_max[0].toFixed(0)+'°</span></div>'+
+        '<div class="kv"><div><span>Humidity</span><em>'+c.relative_humidity_2m+'%</em></div>'+
+        '<div><span>Wind</span><em>'+compass(c.wind_direction_10m)+' '+Math.round(c.wind_speed_10m)+'</em></div>'+
+        '<div><span>Gusts</span><em>'+Math.round(c.wind_gusts_10m)+' km/h</em></div>'+
+        '<div><span>Rain today</span><em>'+(w.daily.precipitation_sum[0]||0).toFixed(1)+' mm</em></div></div>'+
+        sparkSVG(w.hourly.time,w.hourly.temperature_2m,hourNow)+
+        '<div class="spark-lbl"><span>12 am</span><span>Today\'s temperature</span><span>11 pm</span></div>';
+    });
+    $("wxDot").className="dot ok"; $("wxTxt").textContent="Temps: updated "+fmtTime(new Date()).slice(0,5);
+  }catch(e){
+    $("wxDot").className="dot bad"; $("wxTxt").textContent="Temps: couldn't load, retrying";
+  }
+}
+loadWeather();
+setInterval(loadWeather,5*60*1000);
+
+syncRefNames(); $("homeBtn").textContent=homeSet?"Home ✓":"Set home";
+renderPanel();
+connect();
+})();
+</script>
+</body>
+</html>
