@@ -1,0 +1,43 @@
+name: Collect feeds for Storm Watch
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"   # every 5 minutes (GitHub sometimes runs it a few minutes late)
+  workflow_dispatch:         # lets you run it by hand from the Actions tab
+
+permissions:
+  contents: write
+
+concurrency:
+  group: feeds
+  cancel-in-progress: true
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Download the feeds
+        run: |
+          mkdir out
+          get () {  # get <url> <file>: keep the file only if it is valid JSON
+            if curl -fsSL --max-time 60 -A "StormWatch-personal-dashboard" "$1" -o "out/$2" && jq -e . "out/$2" > /dev/null; then
+              echo "OK  $2"
+            else
+              echo "FAIL $2"; echo '{"error":"fetch failed"}' > "out/$2"
+            fi
+          }
+          get "https://api.qldtraffic.qld.gov.au/v2/events?apikey=3e83add325cbb69ac4d8e5bf433d770b" roads.json
+          get "https://publiccontent-gis-psba-qld-gov-au.s3.amazonaws.com/content/Feeds/BushfireCurrentIncidents/bushfireAlert.json" qld-fires.json
+          get "https://www.rfs.nsw.gov.au/feeds/majorIncidents.json" nsw-fires.json
+          date -u +%Y-%m-%dT%H:%M:%SZ > out/updated.txt
+
+      - name: Save them to the "data" branch
+        run: |
+          cd out
+          git init -q -b data
+          git config user.name "stormwatch-helper"
+          git config user.email "stormwatch-helper@users.noreply.github.com"
+          git add .
+          git commit -qm "Update feeds"
+          git push -qf "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" data
