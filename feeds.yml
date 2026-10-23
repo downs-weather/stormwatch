@@ -1,0 +1,59 @@
+name: Collect feeds for Storm Watch
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"   # every 5 minutes (GitHub sometimes runs it a few minutes late)
+  workflow_dispatch:         # lets you run it by hand from the Actions tab
+
+permissions:
+  contents: write
+
+concurrency:
+  group: feeds
+  cancel-in-progress: true
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Download the feeds
+        run: |
+          mkdir out
+          UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"
+          # get <file> <url> [<url> ...]: tries each address, keeps the first one that returns valid JSON
+          get () {
+            f="$1"; shift
+            for u in "$@"; do
+              code=$(curl -sS -L --max-time 60 -A "$UA" -H "Accept: application/json" -o "out/$f" -w "%{http_code}" "$u" 2>out/err.txt || echo "000")
+              if [ "$code" = "200" ] && jq -e . "out/$f" > /dev/null 2>&1; then
+                echo "OK   $f  (HTTP $code from ${u%%\?*})"
+                return 0
+              fi
+              echo "FAIL $f  (HTTP $code from ${u%%\?*})"
+              echo "     curl: $(cat out/err.txt)"
+              echo "     reply starts: $(head -c 300 "out/$f" 2>/dev/null | tr '\n' ' ')"
+            done
+            echo '{"error":"fetch failed"}' > "out/$f"
+          }
+          K=3e83add325cbb69ac4d8e5bf433d770b
+          get roads.json \
+            "https://api.qldtraffic.qld.gov.au/v2/events?apikey=$K" \
+            "https://api.qldtraffic.qld.gov.au/v1/events?apikey=$K" \
+            "https://api.qldtraffic.qld.gov.au/v2/events/past-one-hour?apikey=$K"
+          get qld-fires.json \
+            "https://publiccontent-gis-psba-qld-gov-au.s3.amazonaws.com/content/Feeds/BushfireCurrentIncidents/bushfireAlert.json"
+          get nsw-fires.json \
+            "https://www.rfs.nsw.gov.au/feeds/majorIncidents.json"
+          rm -f out/err.txt
+          date -u +%Y-%m-%dT%H:%M:%SZ > out/updated.txt
+
+      - name: Save them to the "data" branch
+        run: |
+          cd out
+          git init -q -b data
+          git config user.name "stormwatch-helper"
+          git config user.email "stormwatch-helper@users.noreply.github.com"
+          git add .
+          git commit -qm "Update feeds"
+          git push -qf "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" data
